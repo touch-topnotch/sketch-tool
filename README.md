@@ -96,10 +96,6 @@ The direction vector `dir = (x, y, z, w)` is used as follows:
 g++ -std=c++17 -O2 obj2normalmap.cpp -o obj2normalmap
 ```
 
-## License
-
-[Add your license information here]
-
 ## Author
 
 Dmitry T
