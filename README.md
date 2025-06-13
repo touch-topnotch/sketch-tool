@@ -8,6 +8,11 @@ A collection of tools for converting images to CAD-compatible formats and genera
 
 Converts photos into hand-drawn sketch style images with support lines for artistic effect.
 
+<div align="center">
+<img src="examples/house_realistic.png" width="30%" alt="Original realistic house model">
+<img src="examples/house_realistic_edges.png" width="30%" alt="Edges detection">
+<img src="examples/house_realistic_lines.png" width="30%" alt="Lines extraction">
+</div>
 #### Features
 
 - Edge detection using Canny algorithm
@@ -53,6 +58,12 @@ make
 ### obj2normalmap
 
 Generates a tangent-space normal map from a Wavefront .obj model.
+
+#### Example
+<div align="center">
+<img src="examples/house_realistic.png" width="45%" alt="Original realistic house model">
+<img src="examples/house_converted.png" width="39.4%" alt="Converted normal map">
+</div>
 
 #### Features
 

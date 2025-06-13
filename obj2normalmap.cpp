@@ -1,31 +1,23 @@
-// obj2normalmap.cpp  (single‑file, header‑only dependencies)
-// -----------------------------------------------------------------------------
-// Generates a tangent‑space normal map from a Wavefront **.obj** model.
-// (FBX support removed for this minimal version.)
-// -----------------------------------------------------------------------------
-// Usage flags
-//   --obj    <file>             OBJ path (required)
-//   --dir    <x> <y> <z> [w]    Projection direction **D** and optional in‑plane
-//                               rotation **w** in radians (counter‑clockwise).
-//   --size   <width> <height>   Output resolution (default 1024 × 1024)
-//   --offset <u> <v>            Translate projection plane (world units)
-//   --index  <n>                Suffix integer for output file name
-// -----------------------------------------------------------------------------
-// Dependencies (header‑only):
-//   tiny_obj_loader.h       – https://github.com/tinyobjloader/tinyobjloader
-//   stb_image_write.h       – https://github.com/nothings/stb
-// Build (Mac/Linux):
-//   g++ -std=c++17 -O2 obj2normalmap.cpp -o obj2normalmap
-// -----------------------------------------------------------------------------
-// In‑plane rotation explanation
-//   dir = (x, y, z, w)
-//     • D = normalize(x, y, z) → projection vector.
-//     • Basis (U0, V0) is built orthogonal to D.
-//     • Apply 2‑D rotation of **w** radians around D:  U = U0·cos − V0·sin,  V = U0·sin + V0·cos.
-// -----------------------------------------------------------------------------
-// Author: 2025
-// -----------------------------------------------------------------------------
-
+/*  obj2normalmap.cpp  (single‑file, header‑only dependencies)
+    -----------------------------------------------------------------------------
+    Generates a tangent‑space normal map from a Wavefront **.obj** model.
+      • Uniform (isotropic) scaling: preserves aspect ratio so geometry is never
+        stretched in U vs. V. The model is letter‑boxed inside the requested
+        resolution, centred with optional world‑space offsets.
+      • Optional in‑plane rotation **w** (fourth value of --dir).
+    -----------------------------------------------------------------------------
+    Usage
+      --obj    <file>             OBJ path (required)
+      --dir    <x> <y> <z> [w]    Projection vector + optional rotation (rad)
+      --size   <width> <height>   Output resolution (default 1024×1024)
+      --offset <u> <v>            Translate projection plane in world units
+      --index  <n>                Suffix integer for output file name
+    -----------------------------------------------------------------------------
+    Build (Mac/Linux):
+      g++ -std=c++17 -O2 obj2normalmap.cpp -o obj2normalmap
+    -----------------------------------------------------------------------------
+    Author: Dmitry Tetkin (2025) 
+    ----------------------------------------------------------------------------- */ 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -52,7 +44,7 @@ inline float dot(const Vec3&a,const Vec3&b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 inline Vec3 cross(const Vec3&a,const Vec3&b){return{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
 inline Vec3 normalize(const Vec3&v){float l=std::sqrt(dot(v,v));return l? v*(1.f/l):Vec3{0,0,0};}
 
-// --------------------------------‑‑ types ------------------------------------
+// ---------------------------------- types ------------------------------------
 struct Pixel{float depth;Vec3 normal;bool filled;Pixel():depth(std::numeric_limits<float>::max()),normal{0,0,0},filled(false){}};
 
 struct Settings{
@@ -89,27 +81,45 @@ int main(int argc,char**argv){
     Vec3 up = std::fabs(D.y) < 0.99f ? Vec3{0,1,0} : Vec3{1,0,0};
     Vec3 U0 = normalize(cross(up, D));
     Vec3 V0 = cross(D, U0);
-    float c = std::cos(cfg.rot), s = std::sin(cfg.rot);
-    Vec3 U = U0 * c - V0 * s;
-    Vec3 V = U0 * s + V0 * c;
+    float cR = std::cos(cfg.rot), sR = std::sin(cfg.rot);
+    Vec3 U = U0 * cR - V0 * sR;
+    Vec3 V = U0 * sR + V0 * cR;
 
     // Compute bounds in (U,V)
-    float minU = 1e30f, maxU = -1e30f, minV = 1e30f, maxV = -1e30f;
+    float minU =  std::numeric_limits<float>::max(), maxU = -std::numeric_limits<float>::max();
+    float minV =  std::numeric_limits<float>::max(), maxV = -std::numeric_limits<float>::max();
     for(size_t i = 0; i < at.vertices.size()/3; ++i){
         Vec3 p{at.vertices[3*i], at.vertices[3*i+1], at.vertices[3*i+2]};
         float u = dot(p,U), v = dot(p,V);
         minU = std::min(minU,u); maxU = std::max(maxU,u);
         minV = std::min(minV,v); maxV = std::max(maxV,v); }
-    minU += cfg.offU; maxU += cfg.offU; minV += cfg.offV; maxV += cfg.offV;
-    float sU = (maxU-minU)? (cfg.W-1)/(maxU-minU) : 1;
-    float sV = (maxV-minV)? (cfg.H-1)/(maxV-minV) : 1;
 
-    // Rasterise
+    // Apply user world‑unit offsets BEFORE scaling
+    minU += cfg.offU; maxU += cfg.offU;
+    minV += cfg.offV; maxV += cfg.offV;
+
+    // Uniform scale that fits the larger extent, preserving aspect ratio
+    float scaleU = (maxU - minU) ? (cfg.W - 1) / (maxU - minU) : 1.f;
+    float scaleV = (maxV - minV) ? (cfg.H - 1) / (maxV - minV) : 1.f;
+    float scale  = std::min(scaleU, scaleV);         // isotropic scaling
+
+    // Pixel‑space padding to center the projection (letterbox/pillarbox)
+    float padX = 0.5f * ((cfg.W - 1) - (maxU - minU) * scale);
+    float padY = 0.5f * ((cfg.H - 1) - (maxV - minV) * scale);
+
+    // Rasterisation framebuffer
     std::vector<Pixel> fb(cfg.W * cfg.H);
     auto addTri = [&](const Vec3&p0,const Vec3&p1,const Vec3&p2){
-        float u0=(dot(p0,U)+cfg.offU-minU)*sU, v0=(dot(p0,V)+cfg.offV-minV)*sV, w0=dot(p0,D);
-        float u1=(dot(p1,U)+cfg.offU-minU)*sU, v1=(dot(p1,V)+cfg.offV-minV)*sV, w1=dot(p1,D);
-        float u2=(dot(p2,U)+cfg.offU-minU)*sU, v2=(dot(p2,V)+cfg.offV-minV)*sV, w2=dot(p2,D);
+        auto proj = [&](const Vec3&p){
+            float u = (dot(p,U) + cfg.offU - minU) * scale + padX;
+            float v = (dot(p,V) + cfg.offV - minV) * scale + padY;
+            float w = dot(p,D);
+            return std::tuple<float,float,float>(u,v,w);
+        };
+        float u0,v0,w0; std::tie(u0,v0,w0) = proj(p0);
+        float u1,v1,w1; std::tie(u1,v1,w1) = proj(p1);
+        float u2,v2,w2; std::tie(u2,v2,w2) = proj(p2);
+
         int minX=(int)std::floor(std::min({u0,u1,u2})), maxX=(int)std::ceil(std::max({u0,u1,u2}));
         int minY=(int)std::floor(std::min({v0,v1,v2})), maxY=(int)std::ceil(std::max({v0,v1,v2}));
         minX = std::max(minX,0); maxX = std::min(maxX,cfg.W-1);
@@ -122,22 +132,23 @@ int main(int argc,char**argv){
             float w1e=(u2-u1)*(y-v1)-(v2-v1)*(x-u1);
             float w2e=(u0-u2)*(y-v2)-(v0-v2)*(x-u2);
             if((w0e>=0&&w1e>=0&&w2e>=0)||(w0e<=0&&w1e<=0&&w2e<=0)){
-                float a = w1e*invA, b = w2e*invA, cB = 1.f - a - b;
-                float depth = a*w0 + b*w1 + cB*w2;
+                float a=w1e*invA, b=w2e*invA, cλ=1.f-a-b;
+                float depth = a*w0 + b*w1 + cλ*w2;
                 Pixel &px = fb[y*cfg.W + x];
                 if(depth < px.depth){ px.depth = depth; px.normal = faceN; px.filled = true; } } }
     };
 
+    // Rasterise every triangle
     for(const auto &shape : sh){ size_t off = 0;
         for(size_t f=0; f<shape.mesh.num_face_vertices.size(); ++f){ Vec3 v[3];
             for(int k=0; k<3; ++k){ int id = shape.mesh.indices[off+k].vertex_index;
                 v[k] = { at.vertices[3*id], at.vertices[3*id+1], at.vertices[3*id+2] }; }
             off += 3; addTri(v[0],v[1],v[2]); } }
 
-    // Output PNG
+    // Encode into RGB normal map (tangent‑space)
     std::vector<unsigned char> img(cfg.W * cfg.H * 3);
     for(int y=0; y<cfg.H; ++y) for(int x=0; x<cfg.W; ++x){ const Pixel&p = fb[y*cfg.W + x]; size_t idx=3*(y*cfg.W+x);
-        if(p.filled){ img[idx]=(unsigned char)((p.normal.x*0.5f+0.5f)*255);
+        if(p.filled){ img[idx]  =(unsigned char)((p.normal.x*0.5f+0.5f)*255);
                        img[idx+1]=(unsigned char)((p.normal.y*0.5f+0.5f)*255);
                        img[idx+2]=(unsigned char)((p.normal.z*0.5f+0.5f)*255); }
         else { img[idx]=128; img[idx+1]=128; img[idx+2]=255; } }

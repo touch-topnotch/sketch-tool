@@ -1,544 +1,421 @@
-/**
- * @file img2sketch.cpp
- * @brief Algorithmic photo to hand-sketch converter
- * 
- * This program converts a photo into a hand-drawn sketch style image.
- * The process involves:
- * 1. Edge detection using Canny algorithm
- * 2. Line extraction and vectorization
- * 3. Rendering with support lines for artistic effect
- * 
- * @author Original Python version by unknown, C++ port by Claude
- * @version 1.0
- */
+// img2sketch.cpp      --- C++17 port of img2sketch.py v0.2
+//
+// g++ -std=c++17 -O3 -Wall -Wextra -march=native img2sketch.cpp -o img2sketch `pkg-config --cflags --libs opencv4`
+//
+// ./img2sketch --image <image> --out_dir <output_dir>
+//
+// ---------------------------------------------------------------------------
+//  * Requires OpenCV 4.x (with ximgproc) and C++17.
+//  * Perlin-noise jitter was unused in the Python source, so it is omitted
+//    here.  If you later want it, drop in a small 1-D noise function and
+//    modulate line vertices before drawing.
+// ---------------------------------------------------------------------------
+// Author: Dmitry Tetkin (2025) 
+
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/ximgproc.hpp>
+#include <filesystem>
+#include <iostream>
 #include <vector>
+#include <queue>
 #include <cmath>
 #include <random>
-#include <algorithm>
-#include <string>
-#include <filesystem>
 
-namespace fs = std::filesystem;
+// ---------------------------------------------------------------------------
+//                              Data structures
+// ---------------------------------------------------------------------------
 
-/**
- * @brief Point class representing a 2D point with value
- */
-class Point {
-public:
-    int x, y;
-    int value;
+struct Point {
+    int  x = 0, y = 0;
+    bool value = false;
 
-    Point(int x = 0, int y = 0, int v = 0) : x(x), y(y), value(v) {}
-    
-    operator bool() const { return value == 1; }
-    operator int() const { return value; }
-    
-    std::string toString() const {
-        return "Point(x: " + std::to_string(x) + 
-               ", y: " + std::to_string(y) + 
-               ", v: " + std::to_string(value) + ")";
-    }
-    
-    std::pair<int, int> toPair() const {
-        return {x, y};
-    }
+    Point() = default;
+    Point(int xx, int yy, bool v = false) : x(xx), y(yy), value(v) {}
+
+    operator bool() const noexcept { return value; }
 };
 
-/**
- * @brief Line class representing a line segment between two points
- */
-class Line {
-public:
-    Point start;
-    Point end;
-    double slope;
-    double bias;
+struct Line {
+    Point start, end;
+    double slope = 0.0;
+    double bias  = 0.0;
 
-    Line(const Point& start, const Point& end) 
-        : start(start), end(end) {
-        slope = calcSlope(start, end);
-        bias = calcBias(start, slope);
+    Line() = default;
+    Line(const Point& s, const Point& e) : start(s), end(e) {
+        updateParams();
     }
 
-    void updateEnd(const Point& newEnd) {
-        end = newEnd;
-        slope = calcSlope(start, end);
-        bias = calcBias(start, slope);
+    void updateEnd(const Point& e) {
+        end = e;
+        updateParams();
     }
 
-    int manhDist() const {
-        return calcManhDist(start, end);
-    }
-
-    static int calcManhDist(const Point& start, const Point& end) {
+    int manhattan() const {
         return std::abs(start.x - end.x) + std::abs(start.y - end.y);
     }
 
-    static double calcEucDist(const Point& start, const Point& end) {
-        return std::sqrt(std::pow(end.x - start.x, 2) + std::pow(end.y - start.y, 2));
+    static double slopeBetween(const Point& a, const Point& b) {
+        return (b.x == a.x) ? std::numeric_limits<double>::max()
+                            : static_cast<double>(b.y - a.y) /
+                              static_cast<double>(b.x - a.x);
     }
 
-    static double calcSlope(const Point& start, const Point& end) {
-        if (end.x - start.x == 0) return 10000;
-        return static_cast<double>(end.y - start.y) / (end.x - start.x);
+    static double biasOf(const Point& anchor, double m) {
+        return anchor.y - m * anchor.x;
     }
 
-    static double calcBias(const Point& anchor, double slope) {
-        return anchor.y - slope * anchor.x;
-    }
-
-    static double calcAngle(double slope1, double slope2) {
-        double denominator = 1 + slope1 * slope2;
-        if (std::abs(denominator) < 1e-10) {
-            return M_PI / 2;
-        }
-        return std::atan(std::abs((slope1 - slope2) / denominator));
-    }
-
-    static double calcKDistance(const Point& A, const Point& B, const Point& C, double penalty = 1000.0) {
-        double ax = A.x, ay = A.y;
-        double bx = B.x, by = B.y;
-        double cx = C.x, cy = C.y;
-
-        double ABx = bx - ax, ABy = by - ay;
-        double ACx = cx - ax, ACy = cy - ay;
+    // K-distance test (same as Python)
+    static double kDistance(const Point& A, const Point& B,
+                            const Point& C, double penalty = 1000.0) {
+        double ABx = B.x - A.x, ABy = B.y - A.y;
+        double ACx = C.x - A.x, ACy = C.y - A.y;
         double ab2 = ABx * ABx + ABy * ABy;
-
-        if (ab2 == 0) {
-            throw std::runtime_error("A and B must be distinct to define a line");
-        }
+        if (ab2 == 0.0) return penalty;
 
         double t = (ACx * ABx + ACy * ABy) / ab2;
+        if (t <= 1.0) return penalty;
 
-        if (t <= 1) {
-            return penalty;
-        }
+        double dist = std::abs(ABx * ACy - ABy * ACx) / std::sqrt(ab2);
+        return dist;
+    }
 
-        double distance = std::abs(ABx * ACy - ABy * ACx) / std::sqrt(ab2);
-        return distance;
+private:
+    void updateParams() {
+        slope = slopeBetween(start, end);
+        bias  = biasOf(start, slope);
     }
 };
 
-/**
- * @brief Matrix class for handling the edge detection image
- */
+// ---------------------------------------------------------------------------
+//  Matrix helper that wraps the binary edge map the same way the Python
+//  class did.
+// ---------------------------------------------------------------------------
+
 class Matrix {
 public:
-    int width;
-    int height;
-    std::vector<std::vector<Point>> matrix;
-
-    Matrix(const cv::Mat& edges) {
-        width = edges.cols;
-        height = edges.rows;
-        std::cout << "width: " << width << " height: " << height << std::endl;
-
-        matrix.resize(height);
-        for (int y = 0; y < height; y++) {
-            matrix[y].resize(width);
-            for (int x = 0; x < width; x++) {
-                matrix[y][x] = Point(x, y, static_cast<int>(std::ceil(edges.at<uchar>(y, x) / 255.0)));
-            }
-        }
+    explicit Matrix(const cv::Mat& edges) :
+        w_(edges.cols), h_(edges.rows),
+        data_(h_, std::vector<Point>(w_))
+    {
+        for (int y = 0; y < h_; ++y)
+            for (int x = 0; x < w_; ++x)
+                data_[y][x] = Point(x, y, edges.at<uchar>(y, x) > 0);
     }
 
-    std::vector<Point> getNeighbs(const Point& point, const Point& krome) {
-        int x = point.x;
-        int y = point.y;
-        std::vector<std::pair<int, int>> ids = {
-            {x-1, y-1}, {x, y-1}, {x+1, y-1},
-            {x-1, y},             {x+1, y},
-            {x-1, y+1}, {x, y+1}, {x+1, y+1}
-        };
-        std::pair<int, int> krome_id = {krome.x, krome.y};
-        std::vector<Point> res;
+    Point& operator()(int x, int y)             { return data_[y][x]; }
+    const Point& operator()(int x, int y) const { return data_[y][x]; }
 
-        for (const auto& id : ids) {
-            if (!(0 <= id.first && id.first < width && 0 <= id.second && id.second < height)) {
-                continue;
-            }
-            if ((*this)[id] && id != krome_id) {
-                res.push_back((*this)[id]);
-            }
-        }
-        return res;
-    }
+    int width()  const noexcept { return w_; }
+    int height() const noexcept { return h_; }
 
-    std::vector<Point> getBoarderNeighbs(const Point& point) {
-        int x = point.x;
-        int y = point.y;
-        std::vector<std::pair<int, int>> ids = {
-            {x+1, y}, {x-1, y+1}, {x, y+1}, {x+1, y+1}
-        };
-        std::vector<Point> res;
+    // 8-neighbours excluding ‘krome’
+    std::vector<Point*> neighbours(Point& p, const Point& krome) {
+        static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+        static const int dy[8] = {-1,-1,-1,  0, 0,  1, 1, 1};
 
-        for (const auto& id : ids) {
-            if (!(0 <= id.first && id.first < width && 0 <= id.second && id.second < height)) {
-                continue;
-            }
-            if ((*this)[id]) {
-                res.push_back((*this)[id]);
+        std::vector<Point*> out;
+        for (int k = 0; k < 8; ++k) {
+            int nx = p.x + dx[k], ny = p.y + dy[k];
+            if (inside(nx, ny) && data_[ny][nx] &&
+                !(nx == krome.x && ny == krome.y))
+            {
+                out.push_back(&data_[ny][nx]);
             }
         }
-        return res;
+        return out;
     }
 
-    Point& operator[](const std::pair<int, int>& key) {
-        return matrix[key.second][key.first];
-    }
+    // 4 neighbours “boarded” version (E, SW, S, SE)
+    std::vector<Point*> boarded(Point& p) {
+        static const int dx[4] = { 1,-1, 0, 1};
+        static const int dy[4] = { 0, 1, 1, 1};
 
-    void visualize(const Point& point, int size) {
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                std::cout << static_cast<int>((*this)[{j + point.x - size/2, i + point.y - size/2}]) << " ";
-            }
-            std::cout << std::endl;
+        std::vector<Point*> out;
+        for (int k = 0; k < 4; ++k) {
+            int nx = p.x + dx[k], ny = p.y + dy[k];
+            if (inside(nx, ny) && data_[ny][nx]) out.push_back(&data_[ny][nx]);
         }
+        return out;
     }
 
-    void visualizeArray(const std::vector<Point>& points) {
-        int x_min = std::numeric_limits<int>::max();
-        int x_max = std::numeric_limits<int>::min();
-        int y_min = std::numeric_limits<int>::max();
-        int y_max = std::numeric_limits<int>::min();
-
-        for (const auto& p : points) {
-            x_min = std::min(x_min, p.x);
-            x_max = std::max(x_max, p.x);
-            y_min = std::min(y_min, p.y);
-            y_max = std::max(y_max, p.y);
-        }
-
-        for (int y = y_min; y <= y_max; y++) {
-            for (int x = x_min; x <= x_max; x++) {
-                bool found = false;
-                for (const auto& p : points) {
-                    if (p.x == x && p.y == y) {
-                        found = true;
-                        break;
-                    }
-                }
-                std::cout << (found ? "1" : "0");
-            }
-            std::cout << std::endl;
-        }
+private:
+    bool inside(int x, int y) const noexcept {
+        return (0 <= x && x <  w_) && (0 <= y && y < h_);
     }
+
+    int w_, h_;
+    std::vector<std::vector<Point>> data_;
 };
 
-// Function declarations
-std::vector<Line> extractLines(const cv::Mat& edges, int minLength = 10);
-std::pair<Point, Point> clipLineToRect(double slope, double bias, int W, int H);
-std::vector<Line> addSupportLines(const std::vector<Line>& lines, const cv::Size& shape, int count = 30, 
-                                const std::pair<double, double>& xShiftRange = {0.2, 0.5});
-cv::Mat renderLines(const cv::Size& screenSize, const std::vector<Line>& lines,
-                   const cv::Scalar& lineColor = cv::Scalar(0, 0, 0),
-                   const cv::Scalar& backgroundColor = cv::Scalar(250, 250, 235),
-                   int lineThickness = 6,
-                   int supportLineThickness = 1);
+// ---------------------------------------------------------------------------
+//  Image helpers
+// ---------------------------------------------------------------------------
 
-/**
- * @brief Main processing function
- * @param inputPath Path to input image
- * @param outputPath Path to save output image
- * @param strength Gradient scaling for normal map
- * @param mergeAngle Max angle between lines to merge
- * @param mergeDist Max endpoint distance to merge lines
- * @param jitter Stroke jitter amplitude
- * @return true if processing successful, false otherwise
- */
-bool process(const fs::path& inputPath, const fs::path& outputPath,
-            double strength = 10.0, double mergeAngle = 60.0,
-            double mergeDist = 15.0, double jitter = 0.0) {
-    try {
-        std::cout << "Processing " << inputPath << " ..." << std::endl;
-        
-        cv::Mat img = cv::imread(inputPath.string());
-        if (img.empty()) {
-            throw std::runtime_error("Failed to load image: " + inputPath.string());
-        }
+cv::Mat toNormalMap(const cv::Mat& gray, float strength = 1.0f) {
+    cv::Mat gray32;
+    gray.convertTo(gray32, CV_32F, 1.0 / 255.0);
 
-        cv::Mat gray;
-        cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+    cv::Mat gx, gy;
+    cv::Sobel(gray32, gx, CV_32F, 1, 0, 5);
+    cv::Sobel(gray32, gy, CV_32F, 0, 1, 5);
 
-        std::cout << "Extracting edges ..." << std::endl;
-        cv::Mat edges;
-        cv::Canny(gray, edges, 50, 250);
-        if (cv::ximgproc::thinning) {
-            cv::ximgproc::thinning(edges, edges);
-        }
+    gx *= strength;
+    gy *= strength;
 
-        std::vector<Line> lines = extractLines(edges);
+    cv::Mat normal;
+    std::vector<cv::Mat> ch = { -gx, -gy, cv::Mat::ones(gray.size(), CV_32F) };
+    cv::merge(ch, normal);
+    cv::normalize(normal, normal, 0.0, 1.0, cv::NORM_MINMAX);
 
-        // Create output directory if it doesn't exist
-        fs::create_directories(outputPath.parent_path());
-
-        // Save edges image
-        cv::imwrite((outputPath.parent_path() / (outputPath.stem().string() + "_edges.png")).string(), edges);
-
-        // Render and save lines image
-        cv::Mat sketchImg = renderLines(edges.size(), lines);
-        cv::imwrite((outputPath.parent_path() / (outputPath.stem().string() + "_lines.png")).string(), sketchImg);
-
-        std::cout << "Saved results to " << outputPath.parent_path() << std::endl;
-        return true;
-    }
-    catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return false;
-    }
+    normal.convertTo(normal, CV_8UC3, 255.0);
+    return normal;
 }
 
-int main(int argc, char** argv) {
-    if (argc < 3) {
-        std::cout << "Usage: " << argv[0] << " <input_image> <output_image> [strength] [merge_angle] [merge_dist] [jitter]" << std::endl;
-        return 1;
+cv::Mat extractEdges(const cv::Mat& gray) {
+    cv::Mat edges;
+    cv::Canny(gray, edges, 30, 350);
+
+    // Thinning if available
+    if (cv::ximgproc::thinning) {
+        cv::Mat thin;
+        cv::ximgproc::thinning(edges, thin);
+        return thin;
     }
-
-    fs::path inputPath = argv[1];
-    fs::path outputPath = argv[2];
-    
-    double strength = (argc > 3) ? std::stod(argv[3]) : 10.0;
-    double mergeAngle = (argc > 4) ? std::stod(argv[4]) : 60.0;
-    double mergeDist = (argc > 5) ? std::stod(argv[5]) : 15.0;
-    double jitter = (argc > 6) ? std::stod(argv[6]) : 0.0;
-
-    return process(inputPath, outputPath, strength, mergeAngle, mergeDist, jitter) ? 0 : 1;
+    return edges;
 }
 
-/**
- * @brief Extract lines from edge detection image
- * @param edges Edge detection image
- * @param minLength Minimum length of lines to extract
- * @return Vector of extracted lines
- */
-std::vector<Line> extractLines(const cv::Mat& edges, int minLength) {
-    Matrix matrix(edges);
+// ---------------------------------------------------------------------------
+//  Line-extraction port (DFS similar to Python recursion, but iterative)
+// ---------------------------------------------------------------------------
+
+static constexpr int MIN_LINE_LEN = 10;
+
+std::vector<Line> extractLines(const cv::Mat& edges) {
+    Matrix M(edges);
     std::vector<Line> lines;
-    
-    std::cout << "Extracting lines ..." << std::endl;
-    for (int y = 0; y < matrix.height; y++) {
-        for (int x = 0; x < matrix.width; x++) {
-            std::cout << "\rExtracting lines: " << y << "/" << matrix.height 
-                     << " [" << (static_cast<double>(y) / matrix.height * 100) << "%]" << std::flush;
-            
-            Point p = matrix[{x, y}];
+    std::cout << "Extracting lines …\n";
+
+    for (int y = 0; y < M.height(); ++y) {
+        for (int x = 0; x < M.width(); ++x) {
+            Point& p = M(x, y);
             if (!p) continue;
-            
-            std::vector<Point> neighbs = matrix.getBoarderNeighbs(p);
-            
-            std::function<Line(const Point&, Line)> goByLine = [&](const Point& currentPoint, Line lineCandidate) -> Line {
-                std::vector<Point> neighbs;
-                if (currentPoint.x == lineCandidate.end.x && currentPoint.y == lineCandidate.end.y) {
-                    neighbs = matrix.getNeighbs(currentPoint, lineCandidate.start);
-                } else {
-                    neighbs = matrix.getNeighbs(currentPoint, lineCandidate.end);
+
+            auto boarded = M.boarded(p);
+            for (Point* nb : boarded) {
+
+                // Non-recursive DFS that mimics go_by_line
+                Line candidate(p, *nb);
+                Point* cur = nb;
+                Point* prev = &p;
+
+                while (cur) {
+                    candidate.updateEnd(*cur);
+                    auto neighbs = M.neighbours(*cur, *prev);
+                    prev = cur;
+
+                    if (neighbs.empty()) {
+                        cur->value = false;
+                        break;
+                    }
+                    if (neighbs.size() == 1) {
+                        cur->value = false;
+                        cur = neighbs[0];
+                        continue;
+                    }
+
+                    // choose neighbour producing smallest k-distance
+                    double best = 1e9;
+                    Point* next = nullptr;
+                    for (Point* n : neighbs) {
+                        double d = Line::kDistance(candidate.start,
+                                                    *cur, *n);
+                        if (d < best) { best = d; next = n; }
+                    }
+                    if (best > 0.75) break;
+                    cur = next;
                 }
 
-                int n = neighbs.size();
-                Point* nextPoint = nullptr;
-                lineCandidate.updateEnd(currentPoint);
-                
-                if (n < 2) {
-                    currentPoint.value = 0;
-                    if (n == 1) {
-                        nextPoint = &neighbs[0];
-                    }
-                    if (n == 0) {
-                        return lineCandidate;
-                    }
-                } else {
-                    if (lineCandidate.start.x == currentPoint.x && lineCandidate.start.y == currentPoint.y) {
-                        return lineCandidate;
-                    }
-                    
-                    std::vector<double> slopesDiff;
-                    for (const auto& neighb : neighbs) {
-                        slopesDiff.push_back(Line::calcKDistance(lineCandidate.start, currentPoint, neighb));
-                    }
-                    
-                    auto minIt = std::min_element(slopesDiff.begin(), slopesDiff.end());
-                    if (*minIt > 0.75) {
-                        return lineCandidate;
-                    }
-                    nextPoint = &neighbs[std::distance(slopesDiff.begin(), minIt)];
-                }
-                
-                return goByLine(*nextPoint, lineCandidate);
-            };
-            
-            std::vector<Line> lineCandidates;
-            for (const auto& neighb : neighbs) {
-                lineCandidates.push_back(goByLine(neighb, Line(p, neighb)));
-            }
-            
-            for (const auto& line : lineCandidates) {
-                if (line.manhDist() >= minLength) {
-                    lines.push_back(line);
-                }
+                if (candidate.manhattan() >= MIN_LINE_LEN)
+                    lines.emplace_back(candidate);
             }
         }
+
+        std::cerr << "\r" << std::fixed << std::setprecision(1)
+                  << 100.0 * y / M.height() << "% " << std::flush;
     }
-    std::cout << std::endl;
+    std::cerr << "\r100%   \n";
     return lines;
 }
 
-/**
- * @brief Clip a line to rectangle boundaries
- * @param slope Line slope
- * @param bias Line bias
- * @param W Rectangle width
- * @param H Rectangle height
- * @return Pair of points representing clipped line endpoints
- */
-std::pair<Point, Point> clipLineToRect(double slope, double bias, int W, int H) {
-    std::vector<Point> pts;
+// Clip infinite line to a rectangle
+std::pair<Point,Point> clipToRect(double slope, double bias,
+                                  int W, int H) {
+    std::vector<Point> ps;
 
-    // Intersection with left edge x=0
-    double y0 = bias;
-    if (0 <= y0 && y0 <= H) {
-        pts.emplace_back(0, static_cast<int>(y0));
-    }
+    double y0 = bias, yW = slope * W + bias;
+    if (0 <= y0 && y0 <= H) ps.emplace_back(0, static_cast<int>(y0), true);
+    if (0 <= yW && yW <= H) ps.emplace_back(W, static_cast<int>(yW), true);
 
-    // Intersection with right edge x=W
-    double yW = slope * W + bias;
-    if (0 <= yW && yW <= H) {
-        pts.emplace_back(W, static_cast<int>(yW));
-    }
-
-    // If slope is non-zero, check horizontal boundaries
-    if (std::abs(slope) > 1e-10) {
-        // Intersection with bottom edge y=0
+    if (slope != 0.0) {
         double x0 = -bias / slope;
-        if (0 <= x0 && x0 <= W) {
-            pts.emplace_back(static_cast<int>(x0), 0);
-        }
-
-        // Intersection with top edge y=H
         double xH = (H - bias) / slope;
-        if (0 <= xH && xH <= W) {
-            pts.emplace_back(static_cast<int>(xH), H);
-        }
+        if (0 <= x0 && x0 <= W) ps.emplace_back(static_cast<int>(x0), 0, true);
+        if (0 <= xH && xH <= W) ps.emplace_back(static_cast<int>(xH), H, true);
     }
+    if (ps.size() < 2)
+        throw std::runtime_error("Line does not cross rectangle.");
 
-    if (pts.size() < 2) {
-        throw std::runtime_error("Line does not cross the rectangle.");
-    }
-
-    // Sort by x coordinate and take leftmost and rightmost points
-    std::sort(pts.begin(), pts.end(), [](const Point& a, const Point& b) { return a.x < b.x; });
-    return {pts.front(), pts.back()};
+    std::sort(ps.begin(), ps.end(),
+              [](const Point& a, const Point& b){ return a.x < b.x; });
+    return {ps.front(), ps.back()};
 }
 
-/**
- * @brief Add support lines for artistic effect
- * @param lines Original lines
- * @param shape Image shape
- * @param count Number of support lines to add
- * @param xShiftRange Range for x-shift of support lines
- * @return Vector of support lines
- */
-std::vector<Line> addSupportLines(const std::vector<Line>& lines, const cv::Size& shape, int count,
-                                const std::pair<double, double>& xShiftRange) {
-    std::vector<Line> sortedLines = lines;
-    std::sort(sortedLines.begin(), sortedLines.end(),
-              [](const Line& a, const Line& b) { return a.manhDist() > b.manhDist(); });
+// Add sketch-style long support strokes
+std::vector<Line> addSupportLines(std::vector<Line>& base,
+                                  const cv::Size& sz,
+                                  int count = 30,
+                                  std::pair<double,double> shiftRange={2,5})
+{
+    std::sort(base.begin(), base.end(),
+              [](const Line& a, const Line& b){
+                  return a.manhattan() > b.manhattan();
+              });
 
-    std::vector<Line> createSupports;
-    int minDist = 10;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    
-    for (int i = 0; i < count && i < sortedLines.size(); i++) {
+    std::vector<Line> supports;
+    std::mt19937 rng{std::random_device{}()};
+    std::uniform_real_distribution<> rnd(shiftRange.first, shiftRange.second);
+
+    const int minDist = 10;
+
+    for (int i = 0; i < count && i < (int)base.size(); ++i) {
+
+        // skip if too close to earlier supports
+        bool skip = false;
         if (i > 3) {
-            bool tooClose = false;
-            for (int j = 0; j < i; j++) {
-                if ((std::abs(sortedLines[i].start.x - sortedLines[j].start.x) < minDist &&
-                     std::abs(sortedLines[i].start.y - sortedLines[j].start.y) < minDist) ||
-                    (std::abs(sortedLines[i].end.x - sortedLines[j].end.x) < minDist &&
-                     std::abs(sortedLines[i].end.y - sortedLines[j].end.y) < minDist)) {
-                    tooClose = true;
-                    break;
-                }
+            for (int j = 0; j < i; ++j) {
+                if (std::abs(base[i].start.x - base[j].start.x) < minDist &&
+                    std::abs(base[i].start.y - base[j].start.y) < minDist)
+                { skip = true; break; }
             }
-            if (tooClose) continue;
         }
+        if (skip) continue;
 
-        Point start = (sortedLines[i].start.x < sortedLines[i].end.x) ? 
-                     sortedLines[i].start : sortedLines[i].end;
-        Point end = (sortedLines[i].start.x >= sortedLines[i].end.x) ? 
-                   sortedLines[i].start : sortedLines[i].end;
+        Line ln = base[i];
+        Point s = (ln.start.x < ln.end.x) ? ln.start : ln.end;
+        Point e = (ln.start.x >= ln.end.x) ? ln.start : ln.end;
 
-        int minDim = std::min(shape.width, shape.height);
-        std::uniform_int_distribution<> shiftDist(
-            static_cast<int>(xShiftRange.first * minDim),
-            static_cast<int>(xShiftRange.second * minDim)
-        );
-        int shift = shiftDist(gen);
+        int shift = static_cast<int>(rnd(rng) *
+                    std::min(sz.width, sz.height));
 
-        if (shift > std::abs(shift * sortedLines[i].slope)) {
-            start = Point(start.x - shift, 
-                        static_cast<int>(start.y - shift * sortedLines[i].slope), 1);
-            end = Point(end.x + shift,
-                       static_cast<int>(end.y + shift * sortedLines[i].slope), 1);
+        if (shift > std::abs(shift * ln.slope)) {
+            s.x -= shift; s.y -= int(shift * ln.slope);
+            e.x += shift; e.y += int(shift * ln.slope);
         } else {
-            start = Point(static_cast<int>(start.x - shift / sortedLines[i].slope),
-                         start.y - shift, 1);
-            end = Point(static_cast<int>(end.x + shift / sortedLines[i].slope),
-                       end.y + shift, 1);
+            s.x -= int(shift / ln.slope); s.y -= shift;
+            e.x += int(shift / ln.slope); e.y += shift;
         }
 
-        Line line(start, end);
-        try {
-            auto [startClip, endClip] = clipLineToRect(line.slope, line.bias, shape.width, shape.height);
-            if (!(0 <= start.x && start.x <= shape.width && 0 <= start.y && start.y <= shape.height)) {
-                start = startClip;
-            }
-            if (!(0 <= end.x && end.x <= shape.width && 0 <= end.y && end.y <= shape.height)) {
-                end = endClip;
-            }
-            createSupports.emplace_back(start, end);
-        } catch (const std::exception&) {
-            continue;
-        }
+        auto clipped = clipToRect(ln.slope, ln.bias,
+                                  sz.width-1, sz.height-1);
+        if (s.x < 0 || s.x >= sz.width || s.y < 0 || s.y >= sz.height)
+            s = clipped.first;
+        if (e.x < 0 || e.x >= sz.width || e.y < 0 || e.y >= sz.height)
+            e = clipped.second;
+
+        supports.emplace_back(s, e);
     }
-    
-    return createSupports;
+    return supports;
 }
 
-/**
- * @brief Render lines to an image
- * @param screenSize Size of output image
- * @param lines Lines to render
- * @param lineColor Color of main lines
- * @param backgroundColor Background color
- * @param lineThickness Thickness of main lines
- * @param supportLineThickness Thickness of support lines
- * @return Rendered image
- */
-cv::Mat renderLines(const cv::Size& screenSize, const std::vector<Line>& lines,
-                   const cv::Scalar& lineColor, const cv::Scalar& backgroundColor,
-                   int lineThickness, int supportLineThickness) {
-    cv::Mat img(screenSize, CV_8UC3, backgroundColor);
+// Render primitives onto a BGR canvas
+cv::Mat renderLines(const cv::Size& sz, std::vector<Line>& lines,
+                    const cv::Scalar& lineColor    = {0,0,0},
+                    const cv::Scalar& bgColor      = {235,250,250},
+                    int  thick                     = 6,
+                    int  supportThick              = 1)
+{
+    cv::Mat canvas(sz, CV_8UC3, bgColor);
 
-    // Draw main lines
-    for (const auto& ln : lines) {
-        cv::line(img, 
-                cv::Point(ln.start.x, ln.start.y),
-                cv::Point(ln.end.x, ln.end.y),
-                lineColor, lineThickness);
+    for (const auto& ln : lines)
+        cv::line(canvas,
+                 {ln.start.x, ln.start.y},
+                 {ln.end.x  , ln.end.y},
+                 lineColor, thick, cv::LINE_AA);
+
+    auto support = addSupportLines(lines, sz);
+    for (const auto& ln : support)
+        cv::line(canvas,
+                 {ln.start.x, ln.start.y},
+                 {ln.end.x  , ln.end.y},
+                 lineColor, supportThick, cv::LINE_AA);
+
+    return canvas;
+}
+
+// ---------------------------------------------------------------------------
+//                               CLI helpers
+// ---------------------------------------------------------------------------
+
+struct Args {
+    std::filesystem::path imagePath = "examples/house_realistic.png";
+    std::filesystem::path outDir    = "out";
+    double strength      = 10.0;
+    double mergeAngle    = 60.0;   // kept for parity; not used
+    double mergeDist     = 15.0;   // kept for parity; not used
+    double jitterAmp     = 0.0;    // kept for parity; not used
+};
+
+Args parseArgs(int argc, char** argv) {
+    Args a;
+    for (int i = 1; i < argc; ++i) {
+        std::string key = argv[i];
+        if (key == "--out_dir" && i+1 < argc) a.outDir = argv[++i];
+        else if (key == "--strength"  && i+1 < argc) a.strength  = std::stod(argv[++i]);
+        else if (key == "--merge_angle" && i+1 < argc) a.mergeAngle = std::stod(argv[++i]);
+        else if (key == "--merge_dist"  && i+1 < argc) a.mergeDist  = std::stod(argv[++i]);
+        else if (key == "--jitter"      && i+1 < argc) a.jitterAmp  = std::stod(argv[++i]);
+        else if (key[0] != '-') a.imagePath = key;   // positional
+        else {
+            std::cerr << "Unknown option: " << key << "\n";
+            std::exit(EXIT_FAILURE);
+        }
+    }
+    return a;
+}
+
+// ---------------------------------------------------------------------------
+//                                    main
+// ---------------------------------------------------------------------------
+
+int main(int argc, char** argv)
+{
+    std::ios::sync_with_stdio(false);
+
+    Args args = parseArgs(argc, argv);
+    std::cout << "Processing " << args.imagePath << " …\n";
+
+    cv::Mat img = cv::imread(args.imagePath.string(), cv::IMREAD_COLOR);
+    if (img.empty()) {
+        std::cerr << "Could not read image\n";
+        return EXIT_FAILURE;
     }
 
-    // Draw support lines
-    std::vector<Line> supportLines = addSupportLines(lines, screenSize);
-    for (const auto& ln : supportLines) {
-        cv::line(img,
-                cv::Point(ln.start.x, ln.start.y),
-                cv::Point(ln.end.x, ln.end.y),
-                lineColor, supportLineThickness);
-    }
+    cv::Mat gray;
+    cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
 
-    return img;
+    cv::Mat edges = extractEdges(gray);
+    auto lines    = extractLines(edges);
+
+    std::filesystem::create_directories(args.outDir);
+    cv::imwrite((args.outDir / (args.imagePath.stem().string()+"_edges.png")).string(),
+                edges);
+
+    cv::Mat sketch = renderLines(edges.size(), lines);
+    cv::imwrite((args.outDir / (args.imagePath.stem().string()+"_lines.png")).string(),
+                sketch);
+
+    std::cout << "Results saved to " << std::filesystem::absolute(args.outDir)
+              << "\n";
+    return 0;
 }
