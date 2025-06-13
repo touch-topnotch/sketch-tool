@@ -6,7 +6,7 @@ A collection of tools for converting images to CAD-compatible formats and genera
 
 ### img2sketch
 
-Converts photos into hand-drawn sketch style images with support lines for artistic effect.
+Converts photos into hand-drawn sketch style images with algebraically formalised lines (y = kx + b)
 
 <div align="center">
 <img src="examples/house_realistic.png" width="30%" alt="Original realistic house model">
@@ -60,6 +60,7 @@ make
 Generates a tangent-space normal map from a Wavefront .obj model.
 
 #### Example
+
 <div align="center">
 <img src="examples/house_realistic.png" width="45%" alt="Original realistic house model">
 <img src="examples/house_converted.png" width="39.4%" alt="Converted normal map">
