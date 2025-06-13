@@ -426,7 +426,7 @@ def process(path: Path, out_dir: Path, strength: float, merge_angle: float, merg
 def _cli():
     p = argparse.ArgumentParser("Photo → hand‑sketch converter")
     # p.add_argument("image", type=Path)
-    p.add_argument("--out_dir", type=Path, default=Path("out"))
+    p.add_argument("--out_dir", type=Path, default=Path("output"))
     p.add_argument("--strength", type=float, default=10.0, help="Gradient scaling for normal map")
     p.add_argument("--merge_angle", type=float, default=60.0, help="Max angle (deg) between lines to merge")
     p.add_argument("--merge_dist", type=float, default=15.0, help="Max endpoint distance (px) to merge lines")

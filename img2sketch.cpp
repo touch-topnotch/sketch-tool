@@ -359,7 +359,7 @@ cv::Mat renderLines(const cv::Size& sz, std::vector<Line>& lines,
 
 struct Args {
     std::filesystem::path imagePath = "examples/house_realistic.png";
-    std::filesystem::path outDir    = "out";
+    std::filesystem::path outDir    = "output";
     double strength      = 10.0;
     double mergeAngle    = 60.0;   // kept for parity; not used
     double mergeDist     = 15.0;   // kept for parity; not used
