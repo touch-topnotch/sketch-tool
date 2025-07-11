@@ -1,111 +1,122 @@
-# Sketch2CAD framework
+# ✨ Sketch2CAD
 
-A collection of tools for converting images to CAD-compatible formats and generating normal maps.
+*A tiny C++ + TypeScript toolbox that turns raw meshes or images into CAD‑ready assets: normal‑maps, vector edges and hand‑drawn rough sketches.*
 
-## Tools
+<p align="center">
+  <img src=".examples/house_realistic.png" width="30%" alt="original"/>
+  <img src=".examples/house_realistic_edges.png" width="30%" alt="edges"/>
+  <img src=".examples/house_realistic_lines.png" width="30%" alt="sketch"/>
+</p>
 
-### Image to Hand-drawn sketch
+<br/>
 
-Converts photos into hand-drawn sketch style images with algebraically formalised lines (y = kx + b)
+| Converter         | From → To                                       | Highlights                                                        |
+| ----------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| **Obj2NMap**      | `*.obj` → tangent‑space **normal‑map** (`.png`) | isotropic projection, look‑at camera, in‑plane rotation           |
+| **VisibleEdges**  | `*.obj` → **SVG** of only *visible* edges       | Painter’s algorithm + Clipper2 boolean, perfect for laser cutters |
+| **Svg2RoughJS**   | plain **SVG** → hand‑drawn **rough** SVG        | wraps the wonderful [`roughjs`](https://roughjs.com) CLI          |
+| **Img2Sketch**    | photo → vector **sketch** PNG                   | Canny + Hough + line‑merging with jitter                          |
+| **NMap2Surfaces** | normal‑map → surface txt                        | extracts dominant planes *(experimental)*                         |
 
-<div align="center">
-<img src="examples/house_realistic.png" width="30%" alt="Original realistic house model">
-<img src="examples/house_realistic_edges.png" width="30%" alt="Edges detection">
-<img src="examples/house_realistic_lines.png" width="30%" alt="Lines extraction">
-</div>
-#### Features
+---
 
-- Edge detection using Canny algorithm
-- Line extraction and vectorization
-- Support lines generation for artistic effect
-- Configurable parameters for fine-tuning the output
-
-#### Usage
-
-```bash
-./img2sketch <input_image> <output_image> [strength] [merge_angle] [merge_dist] [jitter]
-```
-
-Parameters: https://mail.yandex.ru/?uid=2045477413#tabs/relevant
-
-- `input_image`: Path to input image
-- `output_image`: Path to save output image
-- `strength`: Gradient scaling for normal map (default: 10.0)
-- `merge_angle`: Max angle between lines to merge in degrees (default: 60.0)
-- `merge_dist`: Max endpoint distance to merge lines in pixels (default: 15.0)
-- `jitter`: Stroke jitter amplitude (default: 0.0)
-
-#### Output
-
-The program generates two files:
-
-- `{output_image}_edges.png`: The edge detection result
-- `{output_image}_lines.png`: The final sketch with support lines
-
-#### Dependencies
-
-- OpenCV 4.x with ximgproc module
-- C++17 or later compiler
-
-#### Build
+## 🌱 Quick start
 
 ```bash
-g++ -std=c++17 -O3 -Wall -Wextra -march=native img2sketch.cpp -o img2sketch `pkg-config --cflags --libs opencv4`
+# clone repo & submodules
+$ git clone --recursive https://github.com/yourname/sketch2cad.git
+$ cd sketch2cad
+
+# build release
+$ make                   # lib + CLI
+$ make tests             # optional, needs gtest & opencv
+
+# run the full pipeline on an OBJ
+$ bin/converter_cli .examples/house.obj out.svg \
+      obj2nmap visible_edges svg2roughjs \
+      --cam_x 2 --cam_y 2 --cam_z -10 \
+      --roughness 2.5
 ```
 
-### Object to Normal Map
+After a few seconds you’ll get:
 
-Generates a tangent-space normal map from a Wavefront .obj model.
-
-#### Example
-
-<div align="center">
-<img src="examples/house_realistic.png" width="45%" alt="Original realistic house model">
-<img src="examples/house_converted.png" width="39.4%" alt="Converted normal map">
-</div>
-
-#### Features
-
-- OBJ model support
-- Configurable projection direction and in-plane rotation
-- Customizable output resolution
-- Projection plane translation
-
-#### Usage
-
-```bash
-./obj2normalmap --obj <file> [options]
+```text
+out_normal_map.png
+out_visible_edges.svg
+out_rough.svg
 ```
 
-Options:
+---
 
-- `--obj <file>`: OBJ file path (required)
-- `--dir <x> <y> <z> [w]`: Projection direction D and optional in-plane rotation w in radians
-- `--size <width> <height>`: Output resolution (default: 1024 × 1024)
-- `--offset <u> <v>`: Translate projection plane (world units)
-- `--index <n>`: Suffix integer for output file name
+## 📦 Dependencies
 
-#### In-plane Rotation
+| Mandatory              | Version                  | Notes                         |
+| ---------------------- | ------------------------ | ----------------------------- |
+| **C++17** compiler     | ≥ g++‑10 / clang‑12      |                               |
+| **Clipper2**           | vendored (git submodule) | boolean ops for visible edges |
+| **tinyobjloader**      | header‑only (vendored)   | OBJ parsing                   |
+| **stb\_image / write** | header‑only (vendored)   | PNG IO                        |
 
-The direction vector `dir = (x, y, z, w)` is used as follows:
+Optional modules:
 
-- D = normalize(x, y, z) → projection vector
-- Basis (U0, V0) is built orthogonal to D
-- Apply 2-D rotation of w radians around D:
-  - U = U0·cos − V0·sin
-  - V = U0·sin + V0·cos
+* **OpenCV 4** (`opencv4.pc`) — required for *Img2Sketch* and *NMap2Surfaces* tests.
+* **GoogleTest** — only for the unit‑test target.
+* **Node.js ≥ 18** — runs the RoughJS CLI.
 
-#### Dependencies
+All third‑party headers live in `external/` so the default `make` works offline.
 
-- tiny_obj_loader.h (https://github.com/tinyobjloader/tinyobjloader)
-- stb_image_write.h (https://github.com/nothings/stb)
+---
 
-#### Build
+## 🔧 Build matrix
 
-```bash
-g++ -std=c++17 -O2 obj2normalmap.cpp -o obj2normalmap
+```text
+make                # release
+make DEBUG=1        # debug symbols, -O0 -g
+make tests          # compile & run Google tests
+make clean          # remove build/ and bin/
 ```
 
-## Author
+The Makefile autodetects `opencv4` & `gtest` via `pkg‑config`. If they’re not
+present, the corresponding converters/tests are silently skipped.
 
-Dmitry T
+---
+
+## 💡 Design overview
+
+```
+converter_cli
+└── Pipeline (linked list)
+    ├─ OBJ2NMapConverter      (src/OBJ2NMapConverter.cpp)
+    ├─ VisibleEdgesConverter  (…)
+    ├─ SVG2RoughJSConverter   (…)
+    └─ …                      (easy to extend!)
+```
+
+Each converter implements the `IConverter` interface → reusable & testable.
+New formats take \~50 LOC to plug in.
+
+---
+
+## ✍️ Examples
+
+<p align="center">
+  <img src=".examples/visible_edges.svg" width="32%" alt="edges svg"/>
+  <img src=".examples/rough_gen.svg"   width="32%" alt="rough svg"/>
+  <img src=".examples/house_converted.png" width="32%" alt="normal map"/>
+</p>
+
+---
+
+## 🚀 Roadmap
+
+* [ ] **GLTF2 support**
+* [ ] Real‑time GUI with ImGui
+* [ ] CUDA backend for rasteriser
+
+Pull‑requests & issues welcome!
+
+---
+
+## © 2025 Dmitry Tetkin
+
+Licensed under the MIT License.
