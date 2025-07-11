@@ -1,6 +1,6 @@
 # ✨ Sketch2CAD
 
-*A tiny C++ + TypeScript toolbox that turns raw meshes or images into CAD‑ready assets: normal‑maps, vector edges and hand‑drawn rough sketches.*
+*A tiny C++ toolbox that turns raw meshes or images into CAD‑ready assets: normal‑maps, vector edges and hand‑drawn rough sketches.*
 
 <p align="center">
   <img src=".examples/house_realistic.png" width="30%" alt="original"/>
