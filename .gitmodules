@@ -1,0 +1,3 @@
+[submodule "external/svg2roughjs"]
+	path = external/svg2roughjs
+	url = https://github.com/fskpf/svg2roughjs.git
