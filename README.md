@@ -4,7 +4,7 @@ A collection of tools for converting images to CAD-compatible formats and genera
 
 ## Tools
 
-### img2sketch
+### Image to Hand-drawn sketch
 
 Converts photos into hand-drawn sketch style images with algebraically formalised lines (y = kx + b)
 
@@ -26,7 +26,7 @@ Converts photos into hand-drawn sketch style images with algebraically formalise
 ./img2sketch <input_image> <output_image> [strength] [merge_angle] [merge_dist] [jitter]
 ```
 
-Parameters:
+Parameters: https://mail.yandex.ru/?uid=2045477413#tabs/relevant
 
 - `input_image`: Path to input image
 - `output_image`: Path to save output image
@@ -50,12 +50,10 @@ The program generates two files:
 #### Build
 
 ```bash
-mkdir build && cd build
-cmake ..
-make
+g++ -std=c++17 -O3 -Wall -Wextra -march=native img2sketch.cpp -o img2sketch `pkg-config --cflags --libs opencv4`
 ```
 
-### obj2normalmap
+### Object to Normal Map
 
 Generates a tangent-space normal map from a Wavefront .obj model.
 
