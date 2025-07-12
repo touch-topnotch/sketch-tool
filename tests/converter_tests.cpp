@@ -87,16 +87,72 @@ TEST(Obj2NMapConverter, GeneratesExpectedImage)
     ASSERT_TRUE(imagesAlmostEqual(outPng, dataDir()/"normal_map.png", 5));
 }
 
+TEST(Obj2NMapConverter, SupportsNewVectorFormat)
+{
+    auto conv = ConverterFactory::create("obj2nmap");
+    Options opt;
+    // opt.params["dir"] = "(0,0,1)"; // new vector format
+    opt.params["pos"] = "(10,10,10)";
+    opt.params["W"] = "1024";
+    opt.params["H"] = "1024";
+
+    const auto inObj  = dataDir()/"house.obj";
+    const auto outPng = dataDir()/"house_nm_vector.png";
+
+    conv->convert(inObj.string(), outPng.string(), opt);
+
+    ASSERT_TRUE(std::filesystem::exists(outPng));
+    ASSERT_GT(std::filesystem::file_size(outPng), 0u);
+}
+
+TEST(Obj2NMapConverter, SupportsFocalParameter)
+{
+    auto conv = ConverterFactory::create("obj2nmap");
+    Options opt;
+    opt.params["pos"] = "(10,10,10)";
+    opt.params["focal"] = "1000";  // perspective projection
+    opt.params["W"] = "1024";
+    opt.params["H"] = "1024";
+
+    const auto inObj  = dataDir()/"house.obj";
+    const auto outPng = dataDir()/"house_nm_perspective.png";
+
+    conv->convert(inObj.string(), outPng.string(), opt);
+
+    ASSERT_TRUE(std::filesystem::exists(outPng));
+    ASSERT_GT(std::filesystem::file_size(outPng), 0u);
+}
+
 // -----------------------------------------------------------------------------
 // OBJ → Visible edges SVG
 // -----------------------------------------------------------------------------
-TEST(VisibleEdgesConverter, ProducesSvgWithLines)
+TEST(OBJ2EdgesConverter, ProducesSvgWithLines)
 {
     auto conv = ConverterFactory::create("visible_edges");
     Options opt; // no special params
 
     const auto inObj  = dataDir()/"part.obj";
     const auto outSvg = dataDir()/"visible_edges_gen.svg";
+
+    conv->convert(inObj.string(), outSvg.string(), opt);
+
+    ASSERT_TRUE(std::filesystem::exists(outSvg));
+    std::ifstream f(outSvg);
+    std::string s((std::istreambuf_iterator<char>(f)), {});
+    ASSERT_NE(s.find("<svg"), std::string::npos);
+    ASSERT_NE(s.find("<line"), std::string::npos);
+}
+
+TEST(OBJ2EdgesConverter, SupportsFocalParameter)
+{
+    auto conv = ConverterFactory::create("visible_edges");
+    Options opt;
+    opt.params["focal"] = "800";  // perspective projection
+    opt.params["width"] = "800";
+    opt.params["height"] = "600";
+
+    const auto inObj  = dataDir()/"part.obj";
+    const auto outSvg = dataDir()/"visible_edges_focal.svg";
 
     conv->convert(inObj.string(), outSvg.string(), opt);
 

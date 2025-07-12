@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 add_library(converter_lib
     src/ConverterFactory.cpp
     src/OBJ2NMapConverter.cpp
-    src/VisibleEdgesConverter.cpp
+    src/OBJ2EdgesConverter.cpp
     src/SVG2RoughConverter.cpp
     src/NMap2SurfacesConverter.cpp
     src/Pipeline.cpp

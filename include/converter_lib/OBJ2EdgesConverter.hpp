@@ -3,7 +3,7 @@
 
 namespace converter_lib {
 
-class VisibleEdgesConverter final : public IConverter {
+class OBJ2EdgesConverter final : public IConverter {
 public:
     void convert(const std::string& inputPath,
                  const std::string& outputPath,

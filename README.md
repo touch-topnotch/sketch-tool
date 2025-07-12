@@ -10,13 +10,13 @@
 
 <br/>
 
-| Converter         | From → To                                       | Highlights                                                        |
-| ----------------- | ----------------------------------------------- | ----------------------------------------------------------------- |
-| **Obj2NMap**      | `*.obj` → tangent‑space **normal‑map** (`.png`) | isotropic projection, look‑at camera, in‑plane rotation           |
-| **VisibleEdges**  | `*.obj` → **SVG** of only *visible* edges       | Painter’s algorithm + Clipper2 boolean, perfect for laser cutters |
-| **Svg2RoughJS**   | plain **SVG** → hand‑drawn **rough** SVG        | wraps the wonderful [`roughjs`](https://roughjs.com) CLI          |
-| **Img2Sketch**    | photo → vector **sketch** PNG                   | Canny + Hough + line‑merging with jitter                          |
-| **NMap2Surfaces** | normal‑map → surface txt                        | extracts dominant planes *(experimental)*                         |
+| Converter               | From → To                                                   | Highlights                                                               |
+| ----------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| **Obj2NMap**      | `*.obj` → tangent‑space **normal‑map** (`.png`) | orthographic/perspective projection, look‑at camera, in‑plane rotation |
+| **VisibleEdges**  | `*.obj` → **SVG** of only *visible* edges         | Painter’s algorithm + Clipper2 boolean, perfect for laser cutters       |
+| **Svg2RoughJS**   | plain**SVG** → hand‑drawn **rough** SVG        | customizable roughness, fill styles, hatching patterns                   |
+| **Img2Sketch**    | photo → vector**sketch** PNG                          | Canny + Hough + line‑merging with jitter                                |
+| **NMap2Surfaces** | normal‑map → surface txt                                   | extracts dominant planes*(experimental)*                               |
 
 ---
 
@@ -34,7 +34,7 @@ $ make tests             # optional, needs gtest & opencv
 # run the full pipeline on an OBJ
 $ bin/converter_cli .examples/house.obj out.svg \
       obj2nmap visible_edges svg2roughjs \
-      --cam_x 2 --cam_y 2 --cam_z -10 \
+      --pos "(2,2,-10)" --focal 1000 \
       --roughness 2.5
 ```
 
@@ -48,14 +48,44 @@ out_rough.svg
 
 ---
 
+## 🛠️ Installation
+
+For a complete automated setup, use the installation script:
+
+```bash
+# Make the script executable and run it
+chmod +x install.sh
+./install.sh
+```
+
+This script will:
+
+- Check and install system dependencies (OpenCV, Google Test, Clipper2)
+- Initialize git submodules
+- Install Node.js dependencies for SVG2RoughJS
+- Build the project with all components
+- Run tests to verify everything works
+- Create an environment setup script
+
+**Prerequisites:**
+
+- macOS (with Homebrew) or Ubuntu/Debian (with apt)
+- Git
+- Make
+- C++17 compatible compiler (gcc/g++ or clang)
+
+**Manual installation:** If you prefer to install dependencies manually, see the [Dependencies](#-dependencies) section below.
+
+---
+
 ## 📦 Dependencies
 
-| Mandatory              | Version                  | Notes                         |
-| ---------------------- | ------------------------ | ----------------------------- |
-| **C++17** compiler     | ≥ g++‑10 / clang‑12      |                               |
+| Mandatory                    | Version                  | Notes                         |
+| ---------------------------- | ------------------------ | ----------------------------- |
+| **C++17** compiler     | ≥ g++‑10 / clang‑12  |                               |
 | **Clipper2**           | vendored (git submodule) | boolean ops for visible edges |
-| **tinyobjloader**      | header‑only (vendored)   | OBJ parsing                   |
-| **stb\_image / write** | header‑only (vendored)   | PNG IO                        |
+| **tinyobjloader**      | header‑only (vendored)  | OBJ parsing                   |
+| **stb\_image / write** | header‑only (vendored)  | PNG IO                        |
 
 Optional modules:
 
@@ -64,6 +94,69 @@ Optional modules:
 * **Node.js ≥ 18** — runs the RoughJS CLI.
 
 All third‑party headers live in `external/` so the default `make` works offline.
+
+---
+
+## 📋 Parameters
+
+### 3D Converters (obj2nmap, visible_edges)
+
+#### Camera & Projection
+
+- `--pos "(x,y,z)"` - Camera position (default: auto-calculated)
+- `--dir "(x,y,z)"` - View direction (default: (0,0,1))
+- `--focal <value>` - Focal length for perspective projection (default: 0 = orthographic)
+- `--fov <degrees>` - Field of view in degrees (alternative to focal)
+- `--rot <degrees>` - In-plane rotation (default: 0)
+
+#### Output Settings
+
+- `--w <width>` - Output width (default: 800)
+- `--h <height>` - Output height (default: 800)
+
+### SVG2RoughJS Converter
+
+#### Roughness & Style
+
+- `--roughness <value>` - Roughness level (0-10, default: 1.0)
+- `--bowing <value>` - Bowing factor for lines (default: 0)
+- `--fillStyle <style>` - Fill style: "hachure", "solid", "zigzag", "cross-hatch", "dots", "dashed", "zigzag-line" (default: "hachure")
+- `--fillWeight <value>` - Fill weight/thickness (default: 0.5)
+
+#### Hatching Options
+
+- `--hachureGap <value>` - Gap between hatching lines (default: 4)
+- `--hachureAngle <degrees>` - Angle of hatching lines in degrees (default: -41)
+
+#### Typography
+
+- `--font <family>` - Font family for text elements (default: system font)
+
+### Examples
+
+```bash
+# 3D Converters
+# Orthographic projection (default)
+./bin/converter_cli model.obj output.png obj2nmap
+
+# obj to normal map
+./bin/converter_cli tests/part.obj nm.png obj2nmap \
+       --pos "(10,10,10)" --fov 10 --w 1024 --h 1024
+
+# obj to edges
+./bin/converter_cli tests/part.obj edges.svg visible_edges \  
+ --pos "(10,10,10)" --fov 10 --w 1024 --h 1024
+
+# SVG2RoughJS Converter
+# Basic rough conversion
+./bin/converter_cli input.svg output.svg svg2roughjs --roughness 2.5
+
+# Custom fill style and hatching
+./bin/converter_cli input.svg output.svg svg2roughjs --roughness 3 --fillStyle "cross-hatch" --hachureGap 6
+
+# Pipeline: OBJ → edges → rough sketch
+./bin/converter_cli model.obj final.svg obj2nmap visible_edges svg2roughjs --focal 1000 --roughness 2.5
+```
 
 ---
 
@@ -87,7 +180,7 @@ present, the corresponding converters/tests are silently skipped.
 converter_cli
 └── Pipeline (linked list)
     ├─ OBJ2NMapConverter      (src/OBJ2NMapConverter.cpp)
-    ├─ VisibleEdgesConverter  (…)
+    ├─ OBJ2EdgesConverter  (…)
     ├─ SVG2RoughJSConverter   (…)
     └─ …                      (easy to extend!)
 ```
