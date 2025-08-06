@@ -1,4 +1,4 @@
-# ✨ Sketch2CAD
+# ✨ Sketch Tool
 
 *A tiny C++ toolbox that turns raw meshes or images into CAD‑ready assets: normal‑maps, vector edges and hand‑drawn rough sketches.*
 
