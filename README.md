@@ -3,9 +3,9 @@
 *A tiny C++ toolbox that turns raw meshes or images into CAD‑ready assets: normal‑maps, vector edges and hand‑drawn rough sketches.*
 
 <p align="center">
-  <img src=".examples/house_realistic.png" width="30%" alt="original"/>
-  <img src=".examples/house_realistic_edges.png" width="30%" alt="edges"/>
-  <img src=".examples/house_realistic_lines.png" width="30%" alt="sketch"/>
+  <img src=".examples/draft.svg" width="32%" alt="draft svg"/>
+  <img src=".examples/house_gpu_fixed.svg" width="32%" alt="house cpu fixed"/>
+  <img src=".examples/house_nmap.png" width="32%" alt="normal map"/>
 </p>
 
 <br/>
@@ -16,7 +16,7 @@
 | **VisibleEdges**  | `*.obj` → **SVG** of only *visible* edges         | Painter’s algorithm + Clipper2 boolean, perfect for laser cutters       |
 | **Svg2RoughJS**   | plain**SVG** → hand‑drawn **rough** SVG        | customizable roughness, fill styles, hatching patterns                   |
 | **Img2Sketch**    | photo → vector**sketch** PNG                          | Canny + Hough + line‑merging with jitter                                |
-| **NMap2Surfaces** | normal‑map → surface txt                                   | extracts dominant planes*(experimental)*                               |
+| **NMap2Surfaces** | normal‑map → surface txt                                   | extracts dominant planes*(experimental)*                                 |
 
 ---
 
@@ -113,6 +113,9 @@ All third‑party headers live in `external/` so the default `make` works offlin
 
 - `--w <width>` - Output width (default: 800)
 - `--h <height>` - Output height (default: 800)
+- `--samples <value>` - Number of samples for visible_edges (default: auto-optimized)
+
+**Note:** Use `--samples > 200` only when quality improvement justifies longer rendering time. For most cases, keep it under 200 or omit entirely. With auto-optimized samples, the output already has a sketch-like appearance without needing svg2roughjs.
 
 ### SVG2RoughJS Converter
 
@@ -188,15 +191,26 @@ converter_cli
 Each converter implements the `IConverter` interface → reusable & testable.
 New formats take \~50 LOC to plug in.
 
----
+## ⚡ Performance Showcase
 
-## ✍️ Examples
+**OBJ2Edges algorithm performance on high-poly models:**
 
 <p align="center">
-  <img src=".examples/visible_edges.svg" width="32%" alt="edges svg"/>
-  <img src=".examples/rough_gen.svg"   width="32%" alt="rough svg"/>
-  <img src=".examples/house_converted.png" width="32%" alt="normal map"/>
+  <img src=".examples/image.png" width="80%" alt="Performance benchmark"/>
 </p>
+
+**Results:**
+
+- **274,512 edges** processed in **1.43 seconds**
+- **28,884 visible segments** extracted
+- **Automatic parameter optimization** for optimal quality
+- **GPU-accelerated ray tracing** with Embree
+
+<p align="center">
+  <img src=".examples/asian_1.svg" width="60%" alt="High-poly model edges"/>
+</p>
+
+*The algorithm automatically adapts parameters based on model complexity, ensuring optimal performance for any mesh size.*
 
 ---
 

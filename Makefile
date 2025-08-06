@@ -11,6 +11,7 @@
 
 # ---------- инструменты ---------------------------------------
 CXX       := g++
+OBJCXX    := g++
 AR        := ar
 RM        := rm -rf
 MKDIR_P   := mkdir -p
@@ -21,6 +22,32 @@ CXXFLAGS := -std=c++17 -O2 -Wall -Wextra               \
             -Iinclude/converter_lib                    \
             -Iexternal                                 \
             -IClipper2/CPP/Clipper2Lib/include
+
+# ---------- macOS оптимизации ---------------------------------
+ifeq ($(shell uname -s),Darwin)
+    # Apple Silicon optimizations
+    ifeq ($(shell uname -m),arm64)
+        CXXFLAGS += -mcpu=apple-m2
+    endif
+    
+    # Metal framework for GPU acceleration (link only)
+    METAL_FRAMEWORKS := -framework Metal -framework Foundation
+    
+    # Embree paths
+    EMBREE_INCLUDE := /opt/homebrew/Cellar/embree/4.4.0/include
+    EMBREE_LIB := /opt/homebrew/Cellar/embree/4.4.0/lib
+    
+    # TBB paths
+    TBB_INCLUDE := /opt/homebrew/Cellar/tbb/2022.2.0/include
+    TBB_LIB := /opt/homebrew/Cellar/tbb/2022.2.0/lib
+    
+    # OpenMP paths
+    OPENMP_INCLUDE := /opt/homebrew/Cellar/libomp/20.1.8/include
+    OPENMP_LIB := /opt/homebrew/Cellar/libomp/20.1.8/lib
+    
+    CXXFLAGS += -I$(EMBREE_INCLUDE) -I$(TBB_INCLUDE) -I$(OPENMP_INCLUDE) -DEMBREE_STATIC_LIB
+    LDFLAGS += -L$(EMBREE_LIB) -L$(TBB_LIB) -L$(OPENMP_LIB) -lembree4 -ltbb -lomp -lpthread
+endif
 
 # ---------- внешние библиотеки через pkg-config --------------
 GTEST_CFLAGS  := $(shell pkg-config --cflags gtest 2>/dev/null)
@@ -46,6 +73,7 @@ TEST_SRC := $(wildcard tests/*.cpp)
 
 # ---------- объектные файлы -----------------------------------
 LIB_OBJ  := $(patsubst %.cpp, build/%.o, $(LIB_SRC))
+LIB_OBJ  += $(patsubst %.mm, build/%.o, $(wildcard src/*.mm))
 MAIN_OBJ := $(patsubst %.cpp, build/%.o, $(MAIN_SRC))
 TEST_OBJ := $(patsubst %.cpp, build/%.o, $(TEST_SRC))
 
@@ -55,8 +83,9 @@ EXEC      := $(BIN_DIR)/converter_cli
 TEST_EXE  := $(BIN_DIR)/converter_tests
 LIB_OUT   := build/libconverter.a
 
-# ---------- vpath, чтобы make находил .cpp где бы они ни были -
+# ---------- vpath, чтобы make находил .cpp и .mm где бы они ни были -
 vpath %.cpp src
+vpath %.mm src
 vpath %.cpp Clipper2/CPP/Clipper2Lib/src
 vpath %.cpp tests
 
@@ -69,6 +98,10 @@ build/%.o: %.cpp
 	@$(MKDIR_P) $(dir $@)
 	$(CXX) $(CXXFLAGS) $(GTEST_CFLAGS) -c $< -o $@
 
+build/%.o: %.mm
+	@$(MKDIR_P) $(dir $@)
+	$(OBJCXX) $(CXXFLAGS) $(GTEST_CFLAGS) -c $< -o $@
+
 # ---------- библиотека ----------------------------------------
 $(LIB_OUT): $(LIB_OBJ)
 	@$(MKDIR_P) $(dir $@)
@@ -77,12 +110,12 @@ $(LIB_OUT): $(LIB_OBJ)
 # ---------- executable ----------------------------------------
 $(EXEC): $(LIB_OUT) $(MAIN_OBJ)
 	@$(MKDIR_P) $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(METAL_FRAMEWORKS) -L/opt/homebrew/Cellar/embree/4.4.0/lib -L/opt/homebrew/Cellar/tbb/2022.2.0/lib -L/opt/homebrew/Cellar/libomp/20.1.8/lib -lembree4 -ltbb -lomp
 
 # ---------- тестовый бинарь -----------------------------------
 $(TEST_EXE): $(LIB_OUT) $(TEST_OBJ)
 	@$(MKDIR_P) $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(GTEST_LIBS) -pthread $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GTEST_LIBS) -pthread $(LDFLAGS) $(METAL_FRAMEWORKS) -L/opt/homebrew/Cellar/embree/4.4.0/lib -L/opt/homebrew/Cellar/tbb/2022.2.0/lib -L/opt/homebrew/Cellar/libomp/20.1.8/lib -lembree4 -ltbb -lomp
 
 # ---------- запуск всех тестов --------------------------------
 tests: $(TEST_EXE)
