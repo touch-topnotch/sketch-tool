@@ -19,6 +19,8 @@
 #include <filesystem>
 #include <optional>
 #include <embree4/rtcore.h>          // + добавить
+#include <embree4/rtcore_common.h>
+#include <embree4/rtcore_ray.h>
 
 namespace converter_lib {
 
@@ -411,6 +413,7 @@ void OBJ2EdgesConverter_Optimized::convert(const std::string &inPath,
         ray.time  = 0.f;
 
         RTCOccludedArguments args;
+        rtcInitOccludedArguments(&args);
         args.context = nullptr;
         rtcOccluded1(gScene, &ray, &args);
         return ray.tfar < 0.0f;                  // tfar < 0  ⇒  что-то перекрыло луч

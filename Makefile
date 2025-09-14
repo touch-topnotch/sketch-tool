@@ -41,9 +41,9 @@ ifeq ($(shell uname -s),Darwin)
     TBB_INCLUDE := /opt/homebrew/Cellar/tbb/2022.2.0/include
     TBB_LIB := /opt/homebrew/Cellar/tbb/2022.2.0/lib
     
-    # OpenMP paths
-    OPENMP_INCLUDE := /opt/homebrew/Cellar/libomp/20.1.8/include
-    OPENMP_LIB := /opt/homebrew/Cellar/libomp/20.1.8/lib
+    # OpenMP paths (Homebrew libomp 21.1.0)
+    OPENMP_INCLUDE := /opt/homebrew/Cellar/libomp/21.1.0/include
+    OPENMP_LIB := /opt/homebrew/Cellar/libomp/21.1.0/lib
     
     CXXFLAGS += -I$(EMBREE_INCLUDE) -I$(TBB_INCLUDE) -I$(OPENMP_INCLUDE) -DEMBREE_STATIC_LIB
     LDFLAGS += -L$(EMBREE_LIB) -L$(TBB_LIB) -L$(OPENMP_LIB) -lembree4 -ltbb -lomp -lpthread
@@ -110,12 +110,12 @@ $(LIB_OUT): $(LIB_OBJ)
 # ---------- executable ----------------------------------------
 $(EXEC): $(LIB_OUT) $(MAIN_OBJ)
 	@$(MKDIR_P) $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(METAL_FRAMEWORKS) -L/opt/homebrew/Cellar/embree/4.4.0/lib -L/opt/homebrew/Cellar/tbb/2022.2.0/lib -L/opt/homebrew/Cellar/libomp/20.1.8/lib -lembree4 -ltbb -lomp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(METAL_FRAMEWORKS) -L/opt/homebrew/Cellar/embree/4.4.0/lib -L/opt/homebrew/Cellar/tbb/2022.2.0/lib -L/opt/homebrew/Cellar/libomp/21.1.0/lib -lembree4 -ltbb -lomp
 
 # ---------- тестовый бинарь -----------------------------------
 $(TEST_EXE): $(LIB_OUT) $(TEST_OBJ)
 	@$(MKDIR_P) $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(GTEST_LIBS) -pthread $(LDFLAGS) $(METAL_FRAMEWORKS) -L/opt/homebrew/Cellar/embree/4.4.0/lib -L/opt/homebrew/Cellar/tbb/2022.2.0/lib -L/opt/homebrew/Cellar/libomp/20.1.8/lib -lembree4 -ltbb -lomp
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(GTEST_LIBS) -pthread $(LDFLAGS) $(METAL_FRAMEWORKS) -L/opt/homebrew/Cellar/embree/4.4.0/lib -L/opt/homebrew/Cellar/tbb/2022.2.0/lib -L/opt/homebrew/Cellar/libomp/21.1.0/lib -lembree4 -ltbb -lomp
 
 # ---------- запуск всех тестов --------------------------------
 tests: $(TEST_EXE)
