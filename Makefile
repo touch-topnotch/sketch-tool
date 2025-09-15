@@ -53,11 +53,12 @@ endif
 GTEST_CFLAGS  := $(shell pkg-config --cflags gtest 2>/dev/null)
 GTEST_LIBS    := $(shell pkg-config --libs   gtest 2>/dev/null)
 
-OPENCV_CFLAGS := $(shell pkg-config --cflags opencv4 2>/dev/null)
-OPENCV_LIBS   := $(shell pkg-config --libs   opencv4 2>/dev/null)
+# OpenCV paths for Homebrew
+OPENCV_INCLUDE := /opt/homebrew/opt/opencv/include/opencv4
+OPENCV_LIB     := /opt/homebrew/opt/opencv/lib
 
-CXXFLAGS += $(OPENCV_CFLAGS)
-LDFLAGS  := $(OPENCV_LIBS)
+CXXFLAGS += -I$(OPENCV_INCLUDE)
+LDFLAGS  := -L$(OPENCV_LIB) -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_highgui
 
 # ---------- исходники -----------------------------------------
 # собственные *.cpp (кроме main)

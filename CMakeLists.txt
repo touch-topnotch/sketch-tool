@@ -60,6 +60,7 @@ add_library(converter_lib
     src/ConverterFactory.cpp
     src/OBJ2NMapConverter.cpp
     src/OBJ2EdgesConverter.cpp
+    src/OBJ2NMapEdgesConverter.cpp
     src/SVG2RoughConverter.cpp
     src/NMap2SurfacesConverter.cpp  
 )

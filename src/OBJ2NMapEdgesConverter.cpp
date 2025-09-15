@@ -23,6 +23,7 @@
 #include <vector>
 #include <queue>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace converter_lib {
 
@@ -196,6 +197,9 @@ public:
         // 6) framebuffer (depth+normal+mask)
         struct Pixel{ float depth; Vec3 n; bool filled; };
         std::vector<Pixel> fb(W*H,{FLT_MAX,{0,0,0},false});
+        
+        // Параметры для видимости рёбер (нужны для rasterTri)
+        float polyOffsetZ = optF(opts, "poly_offset_z", 0.002f); // увеличенный оффсет
 
         auto project = [&](Vec3 p){
             if(perspective){
@@ -233,6 +237,7 @@ public:
                 if((w0e>=0&&w1e>=0&&w2e>=0)||(w0e<=0&&w1e<=0&&w2e<=0)){
                     float a=w1e*invA, b=w2e*invA, cλ=1.f-a-b;
                     float z=a*z0+b*z1+cλ*z2;
+                    z -= polyOffsetZ; // полигон-оффсет для избежания самозакрытия
                     Pixel& px=fb[y*W+x];
                     if(z<px.depth){ px.depth=z; px.n=n; px.filled=true; }
                 }
@@ -250,93 +255,256 @@ public:
             }
         }
 
-        // 7) детект рёбер (силуэты + скачки нормалей)
-        float normalAngleDeg = optF(opts,"edge_normal_deg", 25.0f);
-        float depthJumpRel   = optF(opts,"edge_depth_rel",  0.02f);   // 2% от глубины
-        bool  closeLoops     = optF(opts,"edge_close", 1)!=0;
+        // 7) Собираем adjacency рёбер
+        struct Edge { 
+            int a, b; 
+            int f1 = -1, f2 = -1; 
+            Vec3 n1, n2; 
+            float d1 = 0, d2 = 0; 
+        };
+        std::unordered_map<uint64_t, int> eMap;
+        std::vector<Edge> edges;
 
-        float cosThr = std::cos(normalAngleDeg*float(M_PI/180.0));
+        auto keyAB = [&](int i, int j) { 
+            if(i > j) std::swap(i, j); 
+            return (uint64_t(i) << 32) | uint32_t(j); 
+        };
 
-        std::vector<unsigned char> edge(W*H, 0);
-        auto idx=[&](int x,int y){return y*W+x;};
-        const int dx[8]={1,1,0,-1,-1,-1,0,1};
-        const int dy[8]={0,1,1,1,0,-1,-1,-1};
+        // Параметры для классификации рёбер
+        float edgeNormalDeg = optF(opts, "edge_normal_deg", 20.0f);
+        float planeGap = optF(opts, "plane_gap", 0.01f);
+        float tauZ = optF(opts, "tau_z", 0.5f);
+        float stepPx = optF(opts, "step_px", 0.5f);
+        bool closeLoops = optF(opts, "edge_close", 1) != 0;
+        
+        // Параметры для видимости рёбер (улучшенные для лучшего скрытия)
+        float edgeSamplePx = optF(opts, "edge_sample_px", 0.3f);  // более мелкая дискретизация
+        float depthEpsAbs = optF(opts, "edge_tau_abs", 0.1f);     // более строгий допуск
+        float depthEpsRel = optF(opts, "edge_tau_rel", 0.005f);   // более строгий относительный допуск
 
-        for(int y=1;y<H-1;++y){
-            for(int x=1;x<W-1;++x){
-                const Pixel& p = fb[idx(x,y)];
-                if(!p.filled){ 
-                    // пиксель пуст → возможно силуэт, если сосед заполнен
-                    bool neighFilled=false;
-                    for(int k=0;k<8;++k){
-                        const Pixel& q=fb[idx(x+dx[k],y+dy[k])];
-                        neighFilled |= q.filled;
+        float cosThr = std::cos(edgeNormalDeg * float(M_PI/180.0));
+
+        // Собираем рёбра из треугольников
+        int triIndex = 0;
+        for(const auto& s: shp){
+            size_t off = 0;
+            for(size_t f = 0; f < s.mesh.num_face_vertices.size(); ++f){
+                int vi[3];
+                Vec3 p[3];
+                for(int k = 0; k < 3; ++k){ 
+                    int id = s.mesh.indices[off + k].vertex_index;
+                    vi[k] = id;
+                    p[k] = {at.vertices[3*id], at.vertices[3*id+1], at.vertices[3*id+2]};
+                }
+                
+                Vec3 n = normalize(cross(p[1] - p[0], p[2] - p[0]));
+                float d = -dot(n, p[0]);
+                
+                for(int k = 0; k < 3; ++k){
+                    int a = vi[k], b = vi[(k+1) % 3];
+                    if(a > b) std::swap(a, b);
+                    auto K = keyAB(a, b);
+                    int idx;
+                    if(!eMap.count(K)){ 
+                        idx = edges.size(); 
+                        eMap[K] = idx; 
+                        edges.push_back({a, b}); 
                     }
-                    if(neighFilled){ edge[idx(x,y)]=255; }
-                    continue;
+                    idx = eMap[K];
+                    Edge& e = edges[idx];
+                    if(e.f1 == -1){ 
+                        e.f1 = triIndex; 
+                        e.n1 = n; 
+                        e.d1 = d; 
+                    } else { 
+                        e.f2 = triIndex; 
+                        e.n2 = n; 
+                        e.d2 = d; 
+                    }
                 }
-                // сравнение с 8-соседями
-                bool mark=false;
-                for(int k=0;k<8 && !mark;++k){
-                    const Pixel& q=fb[idx(x+dx[k],y+dy[k])];
-                    if(!q.filled){ mark=true; break; } // граница покрытия
-                    // скачок глубины (силуэт по Z)
-                    float zA=p.depth, zB=q.depth;
-                    float dz=std::fabs(zA-zB);
-                    if(dz > std::max(1e-6f, depthJumpRel*std::max(zA,zB))){ mark=true; break; }
-                    // скачок нормали
-                    float c = dot(p.n, q.n);
-                    if(c < cosThr){ mark=true; break; }
-                }
-                if(mark) edge[idx(x,y)]=255;
+                off += 3;
+                triIndex++;
             }
         }
 
-        // 8) трассировка полилиний (8-связность)
-        std::vector<char> vis(W*H,0);
+        // 8) Фильтруем, проецируем, скрываем
+        std::vector<std::vector<std::pair<float,float>>> paths;
+        
+        // Функция для отсечения отрезка по прямоугольнику (возвращает параметры t)
+        auto clipToRectParametric = [](float x0, float y0, float x1, float y1, 
+                                      float minX, float minY, float maxX, float maxY, 
+                                      float& t0, float& t1) -> bool {
+            float dx = x1 - x0, dy = y1 - y0;
+            if(std::fabs(dx) < 1e-6f && std::fabs(dy) < 1e-6f) return false;
+            
+            t0 = 0.0f; t1 = 1.0f;
+            
+            // X-отсечение
+            if(dx > 0) {
+                if(x0 < minX) t0 = std::max(t0, (minX - x0) / dx);
+                if(x1 > maxX) t1 = std::min(t1, (maxX - x0) / dx);
+            } else if(dx < 0) {
+                if(x0 > maxX) t0 = std::max(t0, (maxX - x0) / dx);
+                if(x1 < minX) t1 = std::min(t1, (minX - x0) / dx);
+            } else {
+                if(x0 < minX || x0 > maxX) return false;
+            }
+            
+            // Y-отсечение
+            if(dy > 0) {
+                if(y0 < minY) t0 = std::max(t0, (minY - y0) / dy);
+                if(y1 > maxY) t1 = std::min(t1, (maxY - y0) / dy);
+            } else if(dy < 0) {
+                if(y0 > maxY) t0 = std::max(t0, (maxY - y0) / dy);
+                if(y1 < minY) t1 = std::min(t1, (minY - y0) / dy);
+            } else {
+                if(y0 < minY || y0 > maxY) return false;
+            }
+            
+            return t0 <= t1;
+        };
+        
+        // Функция для определения видимых интервалов на ребре (Z-буферный подход)
+        auto visibleIntervalsOnEdge = [&](Vec3 A, Vec3 B) -> std::vector<std::pair<float,float>> {
+            // Проекция концов
+            auto P0 = project(A); float x0=std::get<0>(P0), y0=std::get<1>(P0), z0=std::get<2>(P0);
+            auto P1 = project(B); float x1=std::get<0>(P1), y1=std::get<1>(P1), z1=std::get<2>(P1);
+
+            // Клип по экрану → t∈[t0,t1]
+            float t0=0.f, t1=1.f;
+            auto clipped = clipToRectParametric(x0,y0,x1,y1, 0,0, float(W-1), float(H-1), t0, t1);
+            if(!clipped) return {};
+
+            // Сколько сэмплов (более плотная дискретизация)
+            float len_px = std::hypot((x1-x0)*(t1-t0), (y1-y0)*(t1-t0));
+            int S = std::max(4, int(len_px / 0.2f)); // шаг 0.2px
+
+            std::vector<std::pair<float,float>> out;
+            bool visPrev=false; float tStart=t0, tPrev=t0;
+
+            auto sample = [&](float t){
+                Vec3 P = A*(1.f-t)+B*t;
+                auto Pr = project(P);
+                float x = std::get<0>(Pr), y = std::get<1>(Pr), z = std::get<2>(Pr);
+                int ix = std::clamp(int(std::floor(x+0.5f)), 0, W-1);
+                int iy = std::clamp(int(std::floor(y+0.5f)), 0, H-1);
+                const auto& px = fb[iy*W+ix];
+
+                if(!px.filled) return true; // фон/дырка → видно
+
+                // Строгий допуск по глубине
+                float tau = 0.05f; // фиксированный допуск
+                return (z <= px.depth + tau);
+            };
+
+            for(int s=0; s<=S; ++s){
+                float t = t0 + (t1-t0) * (float(s)/float(S));
+                bool vis = sample(t);
+
+                if(vis && !visPrev){ tStart = t; }
+                if(!vis && visPrev){ out.emplace_back(tStart, tPrev); }
+                visPrev = vis; tPrev = t;
+            }
+            if(visPrev) out.emplace_back(tStart, tPrev);
+
+            // Слить близкие интервалы
+            const float joinGap = (t1-t0) / float(std::max(4,S));
+            std::vector<std::pair<float,float>> merged;
+            for(auto seg: out){
+                if(!merged.empty() && seg.first - merged.back().second <= 3.0f*joinGap){
+                    merged.back().second = seg.second;
+                } else merged.push_back(seg);
+            }
+            
+            // Фильтрация: удаляем очень короткие интервалы
+            std::vector<std::pair<float,float>> filtered;
+            for(auto seg: merged){
+                float len = seg.second - seg.first;
+                if(len > 0.02f) { // минимум 2% от длины ребра
+                    filtered.push_back(seg);
+                }
+            }
+            return filtered;
+        };
+
+        for(const Edge& e: edges) {
+            // Критерии отрисовки
+            bool draw = false;
+            Vec3 n1 = e.n1, n2 = e.n2;
+            
+            if(e.f2 == -1) {
+                draw = true; // граница меша
+            } else {
+                float c = dot(n1, n2);
+                if(c < cosThr) draw = true; // жёсткий излом нормалей
+                
+                // Силуэт
+                float s1 = dot(n1, dir); 
+                float s2 = dot(n2, dir);
+                if(s1 * s2 < 0) draw = true;
+                
+                // Параллельные, но разные плоскости
+                if(std::fabs(c) > 1-1e-4f && std::fabs(e.d1 - e.d2) > planeGap) draw = true;
+            }
+            if(!draw) continue;
+
+            // 3D отрезок
+            Vec3 A = {at.vertices[3*e.a], at.vertices[3*e.a+1], at.vertices[3*e.a+2]};
+            Vec3 B = {at.vertices[3*e.b], at.vertices[3*e.b+1], at.vertices[3*e.b+2]};
+            
+            // Определяем видимые интервалы
+            auto vis = visibleIntervalsOnEdge(A, B);
+            for(auto [ta, tb] : vis){
+                Vec3 Pa = A*(1.f-ta) + B*ta;
+                Vec3 Pb = A*(1.f-tb) + B*tb;
+                auto A2 = project(Pa); auto B2 = project(Pb);
+                paths.push_back({{std::get<0>(A2), std::get<1>(A2)}, 
+                               {std::get<0>(B2), std::get<1>(B2)}});
+            }
+        }
+
+        // 9) Слияние/упрощение и вывод SVG
+        float simplifyEps = optF(opts, "edge_simplify_px", 0.4f);
         std::vector<std::vector<std::pair<float,float>>> polylines;
-
-        for(int y=0;y<H;++y){
-            for(int x=0;x<W;++x){
-                if(!edge[idx(x,y)] || vis[idx(x,y)]) continue;
-
-                // старт новой цепочки – расширяем в обе стороны
-                std::vector<std::pair<int,int>> chain;
-                auto extend=[&](int sx,int sy,int dirSign){
-                    int cx=sx, cy=sy;
-                    while(true){
-                        vis[idx(cx,cy)]=1; chain.push_back({cx,cy});
-                        bool step=false;
-                        // смотрим соседей – предпочтительно туда, куда «продолжается» линия
-                        for(int k=0;k<8;++k){
-                            int nx=cx+dx[k], ny=cy+dy[k];
-                            if(nx<0||ny<0||nx>=W||ny>=H) continue;
-                            int id=idx(nx,ny);
-                            if(edge[id] && !vis[id]){
-                                cx=nx; cy=ny; step=true; break;
-                            }
-                        }
-                        if(!step) break;
+        
+        // Простое слияние коллинеарных сегментов
+        for(auto& path : paths) {
+            if(path.size() < 2) continue;
+            
+            std::vector<std::pair<float,float>> merged;
+            merged.push_back(path[0]);
+            
+            for(size_t i = 1; i < path.size(); ++i) {
+                auto& prev = merged.back();
+                auto& curr = path[i];
+                
+                // Проверяем коллинеарность и близость
+                if(merged.size() > 1) {
+                    auto& pprev = merged[merged.size()-2];
+                    float dx1 = prev.first - pprev.first, dy1 = prev.second - pprev.second;
+                    float dx2 = curr.first - prev.first, dy2 = curr.second - prev.second;
+                    
+                    float cross = std::fabs(dx1 * dy2 - dy1 * dx2);
+                    float dist = std::hypot(dx2, dy2);
+                    
+                    if(cross < 0.1f && dist < 0.75f) {
+                        // Коллинеарны и близко - заменяем среднюю точку
+                        merged.back() = {(prev.first + curr.first) * 0.5f, 
+                                       (prev.second + curr.second) * 0.5f};
+                    } else {
+                        merged.push_back(curr);
                     }
-                };
-                extend(x,y,+1);
-
-                // координаты → float, БЕЗ инверсии для SVG
-                std::vector<std::pair<float,float>> poly;
-                poly.reserve(chain.size());
-                for(auto& pxy: chain){
-                    poly.emplace_back( float(pxy.first)+0.5f, float(pxy.second)+0.5f );
+                } else {
+                    merged.push_back(curr);
                 }
-                if(poly.size()>=2) polylines.push_back(std::move(poly));
             }
-        }
-
-        // 9) упрощение RDP
-        float simplifyEps = optF(opts,"edge_simplify_px", 0.8f);
-        for(auto& pl : polylines){
+            
+            if(merged.size() >= 2) {
+                // RDP упрощение
             std::vector<std::pair<float,float>> simp;
-            rdp(pl, simplifyEps, simp);
-            pl.swap(simp);
+                rdp(merged, simplifyEps, simp);
+                polylines.push_back(std::move(simp));
+            }
         }
 
         // 10) вывод SVG
